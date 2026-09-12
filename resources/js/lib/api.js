@@ -18,6 +18,16 @@ function readCookie(name) {
     return value ? decodeURIComponent(value) : null;
 }
 
+function applicationPath(path) {
+    const publicPath = '/public';
+    const currentPath = window.location.pathname;
+    const basePath = currentPath === publicPath || currentPath.startsWith(`${publicPath}/`)
+        ? publicPath
+        : '';
+
+    return `${basePath}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 function validationMessage(data) {
     if (!data?.errors) {
         return data?.message || 'Не удалось выполнить запрос.';
@@ -44,7 +54,7 @@ async function parseResponse(response) {
 }
 
 export async function csrfCookie() {
-    const response = await fetch('/sanctum/csrf-cookie', {
+    const response = await fetch(applicationPath('/sanctum/csrf-cookie'), {
         credentials: 'same-origin',
         headers: {
             Accept: 'application/json',
@@ -72,7 +82,7 @@ export async function api(path, options = {}) {
         headers.set('X-XSRF-TOKEN', xsrfToken);
     }
 
-    const response = await fetch(path, {
+    const response = await fetch(applicationPath(path), {
         ...options,
         body,
         credentials: 'same-origin',

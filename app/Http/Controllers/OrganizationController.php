@@ -18,6 +18,8 @@ use InvalidArgumentException;
 
 class OrganizationController extends Controller
 {
+    private const STALE_SYNC_MINUTES = 10;
+
     public function current(Request $request): JsonResponse
     {
         /** @var User $user */
@@ -32,6 +34,9 @@ class OrganizationController extends Controller
                 'pagination' => $this->emptyPagination(),
             ]);
         }
+
+        $this->failStaleSync($organization);
+        $organization->refresh();
 
         return response()->json($this->payload($organization, true));
     }
@@ -58,6 +63,11 @@ class OrganizationController extends Controller
                 ->where('user_id', $user->id)
                 ->lockForUpdate()
                 ->first();
+
+            if ($organization) {
+                $this->failStaleSync($organization);
+                $organization->refresh();
+            }
 
             if (
                 $organization
@@ -102,10 +112,15 @@ class OrganizationController extends Controller
 
         SyncOrganizationJob::dispatch($organization->id, $run->id);
 
+        $organization->refresh();
+        $run->refresh();
+
         return response()->json([
             ...$this->payload($organization, true, $run),
-            'message' => 'Карточка поставлена в очередь на синхронизацию.',
-        ], 202);
+            'message' => $run->status === 'completed'
+                ? 'Данные организации обновлены.'
+                : 'Карточка поставлена в очередь на синхронизацию.',
+        ], $run->status === 'completed' ? 200 : 202);
     }
 
     public function reviews(Request $request): JsonResponse
@@ -140,7 +155,43 @@ class OrganizationController extends Controller
             ]);
         }
 
+        $this->failStaleSync($organization);
+        $organization->refresh();
+
         return response()->json($this->payload($organization, false));
+    }
+
+    private function failStaleSync(Organization $organization): void
+    {
+        if (! in_array($organization->sync_status, ['queued', 'processing'], true)) {
+            return;
+        }
+
+        $run = $organization->latestSyncRun();
+
+        if (! $run || ! in_array($run->status, ['queued', 'processing'], true)) {
+            return;
+        }
+
+        $startedAt = $run->started_at ?? $run->created_at;
+
+        if (! $startedAt || $startedAt->greaterThan(now()->subMinutes(self::STALE_SYNC_MINUTES))) {
+            return;
+        }
+
+        $message = 'Синхронизация остановлена: обработчик очереди не ответил вовремя.';
+
+        $run->forceFill([
+            'status' => 'failed',
+            'error' => $message,
+            'finished_at' => now(),
+        ])->save();
+
+        $organization->forceFill([
+            'sync_status' => 'failed',
+            'sync_finished_at' => now(),
+            'last_error' => $message,
+        ])->save();
     }
 
     private function payload(
